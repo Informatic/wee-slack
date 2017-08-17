@@ -961,10 +961,8 @@ class SlackTeam(object):
         if not self.channel_buffer:
             if config.short_buffer_names:
                 self.preferred_name = self.subdomain
-            elif config.server_aliases not in ['', None]:
-                name = config.server_aliases.get(self.subdomain, None)
-                if name:
-                    self.preferred_name = name
+            elif config.server_aliases.get(self.subdomain):
+                self.preferred_name = config.server_aliases.get(self.subdomain)
             else:
                 self.preferred_name = self.domain
             self.channel_buffer = w.buffer_new("{}".format(self.preferred_name), "buffer_input_callback", "EVENTROUTER", "", "")
@@ -3460,8 +3458,10 @@ class PluginConfig(object):
 
     def get_server_aliases(self, key):
         alias_list = w.config_get_plugin(key)
-        if len(alias_list) > 0:
+        if alias_list:
             return dict(item.split(":") for item in alias_list.split(","))
+
+        return {}
 
     def get_slack_api_token(self, key):
         token = w.config_get_plugin("slack_api_token")
