@@ -1929,26 +1929,25 @@ class SlackMessage(object):
         return (name, name_plain)
 
     def add_reaction(self, reaction, user):
-        m = self.message_json.get('reactions', None)
-        if m:
-            found = False
-            for r in m:
-                if r["name"] == reaction and user not in r["users"]:
+        m = self.message_json.setdefault('reactions', [])
+
+        for r in m:
+            if r["name"] == reaction:
+                if user not in r["users"]:
                     r["users"].append(user)
-                    found = True
-            if not found:
-                self.message_json["reactions"].append({"name": reaction, "users": [user]})
-        else:
-            self.message_json["reactions"] = [{"name": reaction, "users": [user]}]
+                return
+
+        self.message_json["reactions"].append({
+            "name": reaction,
+            "users": [user]
+            })
 
     def remove_reaction(self, reaction, user):
-        m = self.message_json.get('reactions', None)
-        if m:
-            for r in m:
-                if r["name"] == reaction and user in r["users"]:
-                    r["users"].remove(user)
-        else:
-            pass
+        m = self.message_json.get('reactions', [])
+
+        for r in m:
+            if r["name"] == reaction and user in r["users"]:
+                r["users"].remove(user)
 
 
 class SlackThreadMessage(SlackMessage):
