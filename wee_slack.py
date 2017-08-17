@@ -349,7 +349,6 @@ class EventRouter(object):
                     self.delete_context(data)
                 except:
                     dbg("HTTP REQUEST CALLBACK FAILED", True)
-                    pass
             # We got an empty reply and this is weird so just ditch it and retry
             else:
                 dbg("length was zero, probably a bug..")
@@ -473,8 +472,7 @@ def handle_next(*args):
     except:
         if config.debug_mode:
             traceback.print_exc()
-        else:
-            pass
+
     return w.WEECHAT_RC_OK
 
 
@@ -708,13 +706,11 @@ def typing_notification_cb(signal, sig_type, data):
 
 
 def typing_update_cb(data, remaining_calls):
-    data = decode_from_utf8(data)
     w.bar_item_update("slack_typing_notice")
     return w.WEECHAT_RC_OK
 
 
 def slack_never_away_cb(data, remaining_calls):
-    data = decode_from_utf8(data)
     if config.never_away:
         for t in EVENTROUTER.teams.values():
             slackbot = t.get_channel_map()['slackbot']
@@ -738,7 +734,7 @@ def typing_bar_item_cb(data, current_buffer, args):
         # this try is mostly becuase server buffers don't implement is_someone_typing
         try:
             if current_channel.type != 'im' and current_channel.is_someone_typing():
-                typers += current_channel.get_typing_list()
+                typers.extend(current_channel.get_typing_list())
         except:
             pass
 
@@ -746,16 +742,13 @@ def typing_bar_item_cb(data, current_buffer, args):
     # regardless of which buffer you are in currently
     for t in EVENTROUTER.teams.values():
         for channel in t.channels.values():
-            if channel.type == "im":
-                if channel.is_someone_typing():
-                    typers.append("D/" + channel.slack_name)
-                pass
+            if channel.type == "im" and channel.is_someone_typing():
+                typers.append("D/" + channel.slack_name)
 
-    typing = ", ".join(typers)
-    if typing != "":
-        typing = w.color('yellow') + "typing: " + typing
+    if typers:
+        return w.color('yellow') + "typing: " + ", ".join(typers)
 
-    return typing
+    return ''
 
 
 def nick_completion_cb(data, completion_item, current_buffer, completion):
@@ -1158,19 +1151,16 @@ class SlackChannel(object):
                 w.buffer_set(self.channel_buffer, "hotlist", "1")
 
     def formatted_name(self, style="default", typing=False, **kwargs):
-        if config.channel_name_typing_indicator:
-            if not typing:
-                prepend = "#"
-            else:
-                prepend = ">"
+        if config.channel_name_typing_indicator and typing:
+            prepend = ">"
         else:
             prepend = "#"
+
         select = {
             "default": prepend + self.slack_name,
             "sidebar": prepend + self.slack_name,
             "base": self.slack_name,
             "long_default": "{}.{}{}".format(self.team.preferred_name, prepend, self.slack_name),
-            "long_base": "{}.{}".format(self.team.preferred_name, self.slack_name),
         }
         return select[style]
 
@@ -1583,7 +1573,6 @@ class SlackDMChannel(SlackChannel):
             "sidebar": prepend + self.slack_name,
             "base": self.slack_name,
             "long_default": "{}.{}".format(self.team.preferred_name, self.slack_name),
-            "long_base": "{}.{}".format(self.team.preferred_name, self.slack_name),
         }
         return print_color + select[style]
 
@@ -1669,7 +1658,6 @@ class SlackMPDMChannel(SlackChannel):
             "sidebar": prepend + adjusted_name,
             "base": adjusted_name,
             "long_default": "{}.{}".format(self.team.preferred_name, adjusted_name),
-            "long_base": "{}.{}".format(self.team.preferred_name, adjusted_name),
         }
         return select[style]
 
@@ -1820,8 +1808,9 @@ class SlackThreadChannel(object):
 
 class SlackUser(object):
     """
-    Represends an individual slack user. Also where you set their name formatting.
+    Represents an individual slack user. Also where you set their name formatting.
     """
+    is_bot = False
 
     def __init__(self, **kwargs):
         # We require these two things for a vaid object,
@@ -1834,7 +1823,7 @@ class SlackUser(object):
         self.update_color()
 
     def __repr__(self):
-        return "Name:{} Identifier:{}".format(self.name, self.identifier)
+        return "<SlackUser {} #{}>".format(self.name, self.identifier)
 
     def force_color(self, color_name):
         self.color_name = color_name
@@ -1846,11 +1835,22 @@ class SlackUser(object):
         self.color_name = get_nick_color_name(self.name)
         self.color = w.color(self.color_name)
 
-    def formatted_name(self, prepend="", enable_color=True):
-        if enable_color:
-            return self.color + prepend + self.name
-        else:
-            return prepend + self.name
+    @property
+    def message_name(self):
+        """Username formatted for use in message list"""
+        suffix = ' :]' if self.is_bot else ''
+        return self.color + self.name + suffix
+
+    @property
+    def buffer_name(self):
+        """Username formatted for use in buffer name"""
+        prefix = '+' if self.is_active else ' '
+        return prefix + self.name
+
+    @property
+    def active(self):
+        return self.presence == 'active'
+
 
 
 class SlackBot(SlackUser):
@@ -1858,6 +1858,9 @@ class SlackBot(SlackUser):
     Basically the same as a user, but split out to identify and for future
     needs
     """
+    is_bot = True
+    presence = 'active'
+
     def __init__(self, **kwargs):
         super(SlackBot, self).__init__(**kwargs)
 
@@ -1881,8 +1884,7 @@ class SlackMessage(object):
             self.sender = override_sender
             self.sender_plain = override_sender
         else:
-            senders = self.get_sender()
-            self.sender, self.sender_plain = senders[0], senders[1]
+            self.sender, self.sender_plain = self.get_sender()
         self.suffix = ''
         self.ts = SlackTS(message_json['ts'])
         text = self.message_json.get('text')
@@ -1911,29 +1913,19 @@ class SlackMessage(object):
     def get_sender(self):
         name = ""
         name_plain = ""
-        if 'bot_id' in self.message_json and self.message_json['bot_id'] is not None:
-            name = "{} :]".format(self.team.bots[self.message_json["bot_id"]].formatted_name())
-            name_plain = "{}".format(self.team.bots[self.message_json["bot_id"]].formatted_name(enable_color=False))
-        elif 'user' in self.message_json:
-            if self.message_json['user'] == self.team.myidentifier:
-                name = self.team.users[self.team.myidentifier].name
-                name_plain = self.team.users[self.team.myidentifier].name
-            elif self.message_json['user'] in self.team.users:
-                u = self.team.users[self.message_json['user']]
-                if u.is_bot:
-                    name = "{} :]".format(u.formatted_name())
-                else:
-                    name = "{}".format(u.formatted_name())
-                name_plain = "{}".format(u.formatted_name(enable_color=False))
+        if self.message_json.get('bot_id') in self.team.bots:
+            bot = self.team.bots[self.message_json["bot_id"]]
+            return (bot.message_name, bot.name)
+        elif self.message_json.get('user') in self.team.users:
+            user = self.team.users[self.message_json['user']]
+            return (user.message_name, user.name)
         elif 'username' in self.message_json:
             name = "-{}-".format(self.message_json["username"])
             name_plain = "{}".format(self.message_json["username"])
         elif 'service_name' in self.message_json:
             name = "-{}-".format(self.message_json["service_name"])
             name_plain = "{}".format(self.message_json["service_name"])
-        else:
-            name = ""
-            name_plain = ""
+
         return (name, name_plain)
 
     def add_reaction(self, reaction, user):
@@ -2751,8 +2743,7 @@ def modify_buffer_line(buffer, new_line, timestamp, time_id):
                     # w.prnt("", "found matching time date is {}, time is {} ".format(timestamp, line_timestamp))
                     w.hdata_update(struct_hdata_line_data, data, {"message": new_line})
                     break
-                else:
-                    pass
+
             # move backwards one line and try again - exit the while if you hit the end
             line_pointer = w.hdata_move(struct_hdata_line, line_pointer, -1)
     return w.WEECHAT_RC_OK
